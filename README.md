@@ -49,3 +49,11 @@ The Xcode project produces a universal macOS app for Apple Silicon and Intel. Re
 ## License
 
 The source code is distributed under the MIT License. The illustration bundled in `Assets.xcassets/AppIcon.appiconset` is excluded from that license and remains the property of its respective rights holder.
+
+## UI Preview
+
+!(./1.png)
+!(./2.png)
+!(./3.png)
+!(./4.png)
+!(./5.png)
