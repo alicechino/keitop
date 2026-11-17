@@ -1,0 +1,12 @@
+.DS_Store
+.build/
+.swiftpm/
+outputs/
+generated_images/
+work/
+assets/
+*.xcuserstate
+xcuserdata/
+DerivedData/
+*.app/
+*.zip
