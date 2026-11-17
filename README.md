@@ -52,8 +52,8 @@ The source code is distributed under the MIT License. The illustration bundled i
 
 ## UI Preview
 
-!(./1.png)
-!(./2.png)
-!(./3.png)
-!(./4.png)
-!(./5.png)
+![界面预览 1](./1.png)
+![界面预览 2](./2.png)
+![界面预览 3](./3.png)
+![界面预览 4](./4.png)
+![界面预览 5](./5.png)
