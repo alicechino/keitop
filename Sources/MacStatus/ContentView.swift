@@ -111,9 +111,9 @@ struct OverviewPage: View {
         LazyVGrid(columns: columns, spacing: 16) {
             MetricCard(title: "CPU 使用率", value: "\(Int(monitor.cpuUsage.rounded()))%", subtitle: "点击查看每个核心", color: .orange, samples: monitor.samples, keyPath: \.cpu, chartDomain: 0...100, action: onCPUSelected)
             MetricCard(title: "GPU 负载", value: monitor.gpuUsage.map { "\(Int($0.rounded()))%" } ?? "—", subtitle: "频率加权负载", color: .green, samples: monitor.samples, keyPath: \.gpuUsage, chartDomain: 0...100)
+            MetricCard(title: "内存占用", value: "\(formatBytes(monitor.memoryUsed)) / \(formatBytes(monitor.memoryTotal))", subtitle: "\(Int((monitor.memoryFraction * 100).rounded()))% 已使用 · 点击查看内存详情", color: .cyan, samples: monitor.samples, keyPath: \.memory, chartDomain: 0...100, action: onMemorySelected)
             MetricCard(title: "CPU 功耗", value: monitor.cpuPower.map { String(format: "%.1f W", $0) } ?? "—", subtitle: monitor.cpuPower == nil ? "mactop 暂未返回读数" : "Apple Silicon CPU 功耗传感器", color: .yellow, samples: monitor.samples, keyPath: monitor.cpuPower == nil ? nil : \.cpuPower)
             MetricCard(title: "GPU 功耗", value: monitor.gpuPower.map { String(format: "%.1f W", $0) } ?? "—", subtitle: "SoC GPU", color: .purple, samples: monitor.samples, keyPath: monitor.gpuPower == nil ? nil : \.gpuPower)
-            MetricCard(title: "内存占用", value: "\(formatBytes(monitor.memoryUsed)) / \(formatBytes(monitor.memoryTotal))", subtitle: "\(Int((monitor.memoryFraction * 100).rounded()))% 已使用 · 点击查看内存详情", color: .cyan, samples: monitor.samples, keyPath: \.memory, chartDomain: 0...100, action: onMemorySelected)
             MetricCard(title: "整机芯片功耗", value: monitor.chipPower.map { String(format: "%.1f W", $0) } ?? "—", subtitle: monitor.sensorStatus, color: .blue, samples: monitor.samples, keyPath: \.chipPower)
             MetricCard(title: "CPU 温度", value: monitor.cpuTemperature.map { String(format: "%.0f°C", $0) } ?? "—", subtitle: "平均传感器温度", color: .pink, samples: monitor.samples, keyPath: monitor.cpuTemperature == nil ? nil : \.cpuTemperature)
             MetricCard(title: "GPU 温度", value: monitor.gpuTemperature.map { String(format: "%.0f°C", $0) } ?? "—", subtitle: "平均传感器温度", color: .yellow, samples: monitor.samples, keyPath: monitor.gpuTemperature == nil ? nil : \.gpuTemperature)
@@ -320,6 +320,7 @@ struct MemoryPage: View {
 
     private let twoColumns = [GridItem(.flexible()), GridItem(.flexible())]
     private let fiveColumns = Array(repeating: GridItem(.flexible()), count: 5)
+    private let memoryDetailCardMinHeight: CGFloat = 184
 
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
@@ -400,7 +401,7 @@ struct MemoryPage: View {
                     .font(.system(size: 11)).foregroundStyle(.tertiary)
             }
         }
-        .frame(maxWidth: .infinity, minHeight: 150, alignment: .topLeading)
+        .frame(maxWidth: .infinity, minHeight: memoryDetailCardMinHeight, alignment: .topLeading)
         .padding(18).background(.quaternary.opacity(0.33), in: RoundedRectangle(cornerRadius: 15))
         .help("Apple Silicon 使用统一内存，GPU 活动内存是系统内存的一部分。")
     }
@@ -431,7 +432,7 @@ struct MemoryPage: View {
             Text("Swap 是 macOS 使用的磁盘交换空间，与物理内存分开统计。")
                 .font(.system(size: 11)).foregroundStyle(.tertiary)
         }
-        .frame(maxWidth: .infinity, minHeight: 150, alignment: .topLeading)
+        .frame(maxWidth: .infinity, minHeight: memoryDetailCardMinHeight, alignment: .topLeading)
         .padding(18).background(.quaternary.opacity(0.33), in: RoundedRectangle(cornerRadius: 15))
     }
 

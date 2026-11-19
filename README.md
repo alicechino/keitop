@@ -1,6 +1,6 @@
 # keitop
 
-**Version 0.2.0** · Native macOS system monitor built with SwiftUI and Swift Charts. Requires macOS 14 or later.
+**Version 0.2.1** · Native macOS system monitor built with SwiftUI and Swift Charts. Requires macOS 14 or later.
 
 
 ## Features
@@ -41,6 +41,11 @@ The memory page reads physical memory and swap from macOS, and uses the kernel m
 - Added a segmented physical memory breakdown and GPU unified-memory details
 - Added process icons, sorting, and guarded process termination
 - Improved the overview layout and added capacity and battery indicators
+
+## What's new in 0.2.1
+
+- Moved the memory card directly after GPU load on the overview
+- Matched the Swap card height to the Graphics card on the memory page
 
 ## Build
 
