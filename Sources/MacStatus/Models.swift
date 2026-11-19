@@ -5,6 +5,8 @@ import AppKit
 import IOKit
 import IOKit.ps
 import IOKit.storage
+import Metal
+import SystemConfiguration
 
 struct MetricSample: Identifiable {
     let id = UUID()
@@ -21,6 +23,55 @@ struct MetricSample: Identifiable {
     var networkUpload: Double = 0
     var diskRead: Double = 0
     var diskWrite: Double = 0
+}
+
+struct MemoryPressureSample: Identifiable {
+    let id = UUID()
+    let date: Date
+    let value: Double
+}
+
+struct GPUMemoryReading {
+    let used: UInt64
+    let total: UInt64
+
+    var available: UInt64 { total > used ? total - used : 0 }
+    var fraction: Double { total > 0 ? min(1, Double(used) / Double(total)) : 0 }
+    let isUnifiedMemoryEstimate: Bool
+}
+
+struct MemoryCategoryReading: Identifiable {
+    let name: String
+    let bytes: UInt64
+    var id: String { name }
+}
+
+struct DiskVolumeReading: Identifiable {
+    let name: String
+    let mountPath: String
+    let totalBytes: UInt64
+    let availableBytes: UInt64
+    let isNetwork: Bool
+    let isRemovable: Bool
+
+    var id: String { mountPath }
+    var usedBytes: UInt64 { totalBytes > availableBytes ? totalBytes - availableBytes : 0 }
+    var usedFraction: Double { totalBytes > 0 ? min(1, Double(usedBytes) / Double(totalBytes)) : 0 }
+}
+
+struct NetworkInterfaceReading: Identifiable {
+    let name: String
+    let displayName: String
+    let ipv4Addresses: [String]
+    let ipv6Addresses: [String]
+
+    var id: String { name }
+}
+
+private struct NetworkDetailsSnapshot {
+    let interfaces: [NetworkInterfaceReading]
+    let gateway: String?
+    let gatewayInterface: String?
 }
 
 struct CPUCoreReading: Identifiable {
@@ -139,6 +190,9 @@ private struct MactopSoC: Decodable {
 private struct MactopMemory: Decodable {
     let total: UInt64?
     let used: UInt64?
+    let available: UInt64?
+    let swap_total: UInt64?
+    let swap_used: UInt64?
 }
 
 private struct MactopSystemInfo: Decodable {
@@ -147,6 +201,7 @@ private struct MactopSystemInfo: Decodable {
     let e_core_count: Int?
     let p_core_count: Int?
     let s_core_count: Int?
+    let gpu_core_count: Int?
 }
 
 private struct MactopSnapshot: Decodable {
@@ -193,10 +248,15 @@ private struct MactopSnapshot: Decodable {
             gpuTemperature: gpu_temp ?? soc_metrics?.gpu_temp,
             memoryUsed: memory?.used,
             memoryTotal: memory?.total,
+            memoryAvailable: memory?.available,
+            swapUsed: memory?.swap_used,
+            swapTotal: memory?.swap_total,
             memoryPressure: nil,
             fans: fans ?? [],
             cpuCores: cpuCores,
-            cpuModel: systemInfo?.name
+            cpuModel: systemInfo?.name,
+            cpuCoreCount: systemInfo?.core_count,
+            gpuCoreCount: systemInfo?.gpu_core_count
         )
     }
 }
@@ -212,16 +272,23 @@ struct SensorSnapshot {
     let gpuTemperature: Double?
     let memoryUsed: UInt64?
     let memoryTotal: UInt64?
+    let memoryAvailable: UInt64?
+    let swapUsed: UInt64?
+    let swapTotal: UInt64?
     let memoryPressure: Double?
     let fans: [FanReading]
     let cpuCores: [CPUCoreReading]?
     let cpuModel: String?
+    let cpuCoreCount: Int?
+    let gpuCoreCount: Int?
 
     init(
         cpuPower: Double?, gpuPower: Double?, chipPower: Double?, cpuUsage: Double?, gpuUsage: Double?,
         gpuFrequency: Double?, cpuTemperature: Double?, gpuTemperature: Double?, memoryUsed: UInt64?,
-        memoryTotal: UInt64?, memoryPressure: Double?, fans: [FanReading],
-        cpuCores: [CPUCoreReading]? = nil, cpuModel: String? = nil
+        memoryTotal: UInt64?, memoryAvailable: UInt64? = nil, swapUsed: UInt64? = nil,
+        swapTotal: UInt64? = nil, memoryPressure: Double?, fans: [FanReading],
+        cpuCores: [CPUCoreReading]? = nil, cpuModel: String? = nil,
+        cpuCoreCount: Int? = nil, gpuCoreCount: Int? = nil
     ) {
         self.cpuPower = cpuPower
         self.gpuPower = gpuPower
@@ -233,10 +300,15 @@ struct SensorSnapshot {
         self.gpuTemperature = gpuTemperature
         self.memoryUsed = memoryUsed
         self.memoryTotal = memoryTotal
+        self.memoryAvailable = memoryAvailable
+        self.swapUsed = swapUsed
+        self.swapTotal = swapTotal
         self.memoryPressure = memoryPressure
         self.fans = fans
         self.cpuCores = cpuCores
         self.cpuModel = cpuModel
+        self.cpuCoreCount = cpuCoreCount
+        self.gpuCoreCount = gpuCoreCount
     }
 
     init(macmon: MacmonSnapshot) {
@@ -250,10 +322,15 @@ struct SensorSnapshot {
         gpuTemperature = macmon.temp?.gpu_temp_avg
         memoryUsed = macmon.memory?.ram_usage
         memoryTotal = macmon.memory?.ram_total
+        memoryAvailable = nil
+        swapUsed = nil
+        swapTotal = nil
         memoryPressure = macmon.memory?.pressure_percent
         fans = macmon.fans ?? []
         cpuCores = nil
         cpuModel = nil
+        cpuCoreCount = nil
+        gpuCoreCount = nil
     }
 }
 
@@ -373,6 +450,17 @@ final class SystemMonitor: ObservableObject {
     @Published var cpuUsage: Double = 0
     @Published var memoryUsed: UInt64 = 0
     @Published var memoryTotal: UInt64 = ProcessInfo.processInfo.physicalMemory
+    @Published var memoryAvailable: UInt64 = ProcessInfo.processInfo.physicalMemory
+    @Published var memoryWired: UInt64 = 0
+    @Published var memoryActive: UInt64 = 0
+    @Published var memoryCached: UInt64 = 0
+    @Published var memoryCompressed: UInt64 = 0
+    @Published var memoryFree: UInt64 = 0
+    @Published var swapUsed: UInt64 = 0
+    @Published var swapTotal: UInt64 = 0
+    @Published var memoryPressureLevel: Int?
+    @Published var memoryPressureSamples: [MemoryPressureSample] = []
+    @Published var gpuMemory: GPUMemoryReading?
     @Published var thermalState: ProcessInfo.ThermalState = ProcessInfo.processInfo.thermalState
     @Published var samples: [MetricSample] = []
     @Published var records: [MetricSample] = []
@@ -390,12 +478,18 @@ final class SystemMonitor: ObservableObject {
     @Published var fans: [FanReading] = []
     @Published var cpuCores: [CPUCoreReading] = []
     @Published var cpuModel: String?
+    @Published var cpuCoreCount: Int?
+    @Published var gpuCoreCount: Int?
     @Published var processes: [ProcessReading] = []
     @Published var networkDownloadMBps: Double = 0
     @Published var networkUploadMBps: Double = 0
     @Published var diskReadMBps: Double = 0
     @Published var diskWriteMBps: Double = 0
     @Published var battery: BatteryReading?
+    @Published var diskVolumes: [DiskVolumeReading] = []
+    @Published var networkInterfaces: [NetworkInterfaceReading] = []
+    @Published var defaultGateway: String?
+    @Published var gatewayInterface: String?
 
     private var timer: Timer?
     private var previousTicks: (UInt32, UInt32, UInt32, UInt32)?
@@ -404,6 +498,10 @@ final class SystemMonitor: ObservableObject {
     private var previousCounterDate: Date?
     private var processIconCache: [String: NSImage] = [:]
     private let sensorRunner = SensorRunner()
+    private var lastVolumeScan = Date.distantPast
+    private var volumeScanInProgress = false
+    private var lastNetworkScan = Date.distantPast
+    private var networkScanInProgress = false
 
     init() {
         refresh()
@@ -418,6 +516,40 @@ final class SystemMonitor: ObservableObject {
     var memoryFraction: Double {
         guard memoryTotal > 0 else { return 0 }
         return min(1, Double(memoryUsed) / Double(memoryTotal))
+    }
+
+    var memoryComposition: [MemoryCategoryReading] {
+        let raw = [
+            MemoryCategoryReading(name: "Wired", bytes: memoryWired),
+            MemoryCategoryReading(name: "Used", bytes: memoryActive),
+            MemoryCategoryReading(name: "Cache", bytes: memoryCached),
+            MemoryCategoryReading(name: "Free", bytes: memoryFree)
+        ]
+        let rawTotal = raw.reduce(UInt64(0)) { $0 &+ $1.bytes }
+        guard memoryTotal > 0, rawTotal > memoryTotal else {
+            return raw + [MemoryCategoryReading(name: "Other", bytes: memoryTotal > rawTotal ? memoryTotal - rawTotal : 0)]
+        }
+
+        // Some VM counters are not mutually exclusive on every macOS release.
+        // Scale their proportions to physical memory so the bar always totals 100%.
+        var normalized = raw.map {
+            MemoryCategoryReading(name: $0.name, bytes: UInt64((Double($0.bytes) / Double(rawTotal)) * Double(memoryTotal)))
+        }
+        let normalizedTotal = normalized.reduce(UInt64(0)) { $0 &+ $1.bytes }
+        normalized.append(MemoryCategoryReading(name: "Other", bytes: memoryTotal - normalizedTotal))
+        return normalized
+    }
+
+    var systemVolume: DiskVolumeReading? { diskVolumes.first { $0.mountPath == "/" } }
+    var networkVolumes: [DiskVolumeReading] { diskVolumes.filter(\.isNetwork) }
+    var removableVolumes: [DiskVolumeReading] { diskVolumes.filter { $0.isRemovable && !$0.isNetwork && $0.mountPath != "/" } }
+
+    var cpuSpecification: String? {
+        guard let cpuModel else { return nil }
+        let cpuCores = cpuCoreCount.map { "\($0)C CPU" }
+        let gpuCores = gpuCoreCount.map { "\($0)C GPU" }
+        let counts = [cpuCores, gpuCores].compactMap { $0 }.joined(separator: " + ")
+        return counts.isEmpty ? cpuModel : "\(cpuModel) (\(counts))"
     }
 
     func start() {
@@ -437,9 +569,16 @@ final class SystemMonitor: ObservableObject {
         readProcesses()
         updateSystemIO()
         battery = readBattery()
+        refreshNativeMemoryDetails()
+        gpuMemory = readGPUMemory()
+        refreshDiskVolumesIfNeeded()
+        refreshNetworkDetailsIfNeeded()
         // Once mactop/macmon is connected, keep using its memory definition so
         // the displayed percentage and history chart don't jump between APIs.
-        if !sensorConnected { memoryUsed = readMemoryUsed() }
+        if !sensorConnected {
+            memoryUsed = readMemoryUsed()
+            memoryAvailable = memoryTotal > memoryUsed ? memoryTotal - memoryUsed : 0
+        }
         thermalState = ProcessInfo.processInfo.thermalState
         let sample = MetricSample(date: .now, cpu: cpuUsage, memory: memoryFraction * 100, cpuPower: cpuPower ?? 0, gpuPower: gpuPower ?? 0, gpuUsage: gpuUsage ?? 0, chipPower: chipPower ?? 0, cpuTemperature: cpuTemperature ?? 0, gpuTemperature: gpuTemperature ?? 0, networkDownload: networkDownloadMBps, networkUpload: networkUploadMBps, diskRead: diskReadMBps, diskWrite: diskWriteMBps)
         samples.append(sample)
@@ -623,6 +762,10 @@ final class SystemMonitor: ObservableObject {
         if let value = snapshot.cpuUsage { cpuUsage = value }
         if let value = snapshot.memoryUsed { memoryUsed = value }
         if let value = snapshot.memoryTotal { memoryTotal = value }
+        if let value = snapshot.memoryAvailable { memoryAvailable = value }
+        else { memoryAvailable = memoryTotal > memoryUsed ? memoryTotal - memoryUsed : 0 }
+        if let value = snapshot.swapUsed { swapUsed = value }
+        if let value = snapshot.swapTotal { swapTotal = value }
         cpuPower = snapshot.cpuPower
         gpuPower = snapshot.gpuPower
         chipPower = snapshot.chipPower
@@ -632,7 +775,13 @@ final class SystemMonitor: ObservableObject {
         gpuUsage = snapshot.gpuUsage
         if let cores = snapshot.cpuCores { cpuCores = cores }
         if let model = snapshot.cpuModel { cpuModel = model }
+        if let count = snapshot.cpuCoreCount { cpuCoreCount = count }
+        if let count = snapshot.gpuCoreCount { gpuCoreCount = count }
         memoryPressure = snapshot.memoryPressure
+        if let pressure = snapshot.memoryPressure {
+            memoryPressureSamples.append(MemoryPressureSample(date: .now, value: min(100, max(0, pressure))))
+            if memoryPressureSamples.count > 90 { memoryPressureSamples.removeFirst(memoryPressureSamples.count - 90) }
+        }
         fans = snapshot.fans
         sensorConnected = true
         sensorStatus = "传感器已连接 · 实时采样"
@@ -683,6 +832,245 @@ final class SystemMonitor: ObservableObject {
         let active = UInt64(stats.active_count) + UInt64(stats.wire_count) + UInt64(stats.compressor_page_count)
         return active * pageSize
     }
+
+    private func refreshNativeMemoryDetails() {
+        var stats = vm_statistics64()
+        var count = mach_msg_type_number_t(MemoryLayout<vm_statistics64_data_t>.size / MemoryLayout<integer_t>.size)
+        let result = withUnsafeMutablePointer(to: &stats) {
+            $0.withMemoryRebound(to: integer_t.self, capacity: Int(count)) {
+                host_statistics64(mach_host_self(), HOST_VM_INFO64, $0, &count)
+            }
+        }
+        if result == KERN_SUCCESS {
+            let pageSize = UInt64(vm_kernel_page_size)
+            memoryWired = UInt64(stats.wire_count) * pageSize
+            memoryActive = UInt64(stats.active_count) * pageSize
+            memoryCached = (UInt64(stats.inactive_count) + UInt64(stats.speculative_count)) * pageSize
+            memoryCompressed = UInt64(stats.compressor_page_count) * pageSize
+            memoryFree = UInt64(stats.free_count) * pageSize
+        }
+
+        var swap = xsw_usage()
+        var swapSize = MemoryLayout<xsw_usage>.size
+        if sysctlbyname("vm.swapusage", &swap, &swapSize, nil, 0) == 0 {
+            swapUsed = swap.xsu_used
+            swapTotal = swap.xsu_total
+        }
+
+        var pressure: Int32 = 0
+        var pressureSize = MemoryLayout<Int32>.size
+        if sysctlbyname("kern.memorystatus_vm_pressure_level", &pressure, &pressureSize, nil, 0) == 0 {
+            switch pressure {
+            case 1: memoryPressureLevel = 0
+            case 2: memoryPressureLevel = 1
+            case 4: memoryPressureLevel = 2
+            default: memoryPressureLevel = nil
+            }
+            if let memoryPressureLevel {
+                memoryPressureSamples.append(MemoryPressureSample(date: .now, value: Double(memoryPressureLevel) * 50))
+                if memoryPressureSamples.count > 90 { memoryPressureSamples.removeFirst(memoryPressureSamples.count - 90) }
+            }
+        }
+    }
+
+    private func readGPUMemory() -> GPUMemoryReading? {
+        var iterator: io_iterator_t = 0
+        guard IOServiceGetMatchingServices(kIOMainPortDefault, IOServiceMatching("IOAccelerator"), &iterator) == KERN_SUCCESS else { return nil }
+        defer { IOObjectRelease(iterator) }
+
+        while true {
+            let service = IOIteratorNext(iterator)
+            guard service != 0 else { break }
+            defer { IOObjectRelease(service) }
+
+            var unmanagedProperties: Unmanaged<CFMutableDictionary>?
+            guard IORegistryEntryCreateCFProperties(service, &unmanagedProperties, kCFAllocatorDefault, 0) == KERN_SUCCESS,
+                  let properties = unmanagedProperties?.takeRetainedValue() as? [String: Any],
+                  let statistics = properties["PerformanceStatistics"] as? [String: Any] else { continue }
+
+            func bytes(_ keys: [String]) -> UInt64? {
+                for key in keys {
+                    if let number = statistics[key] as? NSNumber, number.uint64Value > 0 { return number.uint64Value }
+                }
+                return nil
+            }
+
+            let vramUsed = bytes(["vramUsedBytes"])
+            let vramFree = bytes(["vramFreeBytes"])
+            if let vramUsed, let vramFree, vramUsed + vramFree > 0 {
+                let isUnified = MTLCreateSystemDefaultDevice()?.hasUnifiedMemory ?? true
+                return GPUMemoryReading(used: vramUsed, total: vramUsed + vramFree, isUnifiedMemoryEstimate: isUnified)
+            }
+
+            // Apple Silicon shares physical memory with the GPU. This driver
+            // counter is the GPU's in-use portion of unified system memory.
+            if let used = bytes(["In use system memory", "inUseSysMemoryBytes", "sysmemUsedBytes", "Alloc system memory"]) {
+                return GPUMemoryReading(used: min(used, memoryTotal), total: memoryTotal, isUnifiedMemoryEstimate: true)
+            }
+        }
+        return nil
+    }
+
+    private func refreshDiskVolumesIfNeeded() {
+        guard !volumeScanInProgress, Date.now.timeIntervalSince(lastVolumeScan) >= 30 else { return }
+        lastVolumeScan = .now
+        volumeScanInProgress = true
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            let volumes = Self.readMountedVolumes()
+            Task { @MainActor [weak self] in
+                self?.diskVolumes = volumes
+                self?.volumeScanInProgress = false
+            }
+        }
+    }
+
+    private func refreshNetworkDetailsIfNeeded() {
+        guard !networkScanInProgress, Date.now.timeIntervalSince(lastNetworkScan) >= 5 else { return }
+        lastNetworkScan = .now
+        networkScanInProgress = true
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            let snapshot = Self.readNetworkDetails()
+            Task { @MainActor [weak self] in
+                self?.networkInterfaces = snapshot.interfaces
+                self?.defaultGateway = snapshot.gateway
+                self?.gatewayInterface = snapshot.gatewayInterface
+                self?.networkScanInProgress = false
+            }
+        }
+    }
+
+    nonisolated private static func readNetworkDetails() -> NetworkDetailsSnapshot {
+        struct AddressSet {
+            var ipv4 = Set<String>()
+            var ipv6 = Set<String>()
+        }
+
+        var addresses: [String: AddressSet] = [:]
+        var head: UnsafeMutablePointer<ifaddrs>?
+        if getifaddrs(&head) == 0, let first = head {
+            defer { freeifaddrs(head) }
+            var item: UnsafeMutablePointer<ifaddrs>? = first
+            while let current = item {
+                let entry = current.pointee
+                if let namePointer = entry.ifa_name,
+                   let socketAddress = entry.ifa_addr,
+                   entry.ifa_flags & UInt32(IFF_UP) != 0 {
+                    let name = String(cString: namePointer)
+                    let family = Int32(socketAddress.pointee.sa_family)
+                    if name != "lo0", family == AF_INET || family == AF_INET6 {
+                        var host = [CChar](repeating: 0, count: Int(NI_MAXHOST))
+                        let result = getnameinfo(
+                            socketAddress,
+                            socklen_t(socketAddress.pointee.sa_len),
+                            &host,
+                            socklen_t(host.count),
+                            nil,
+                            0,
+                            NI_NUMERICHOST
+                        )
+                        if result == 0 {
+                            let address = String(cString: host)
+                            if family == AF_INET, !address.hasPrefix("127."), !address.hasPrefix("169.254.") {
+                                addresses[name, default: AddressSet()].ipv4.insert(address)
+                            } else if family == AF_INET6,
+                                      address != "::1",
+                                      !address.lowercased().hasPrefix("fe80:") {
+                                addresses[name, default: AddressSet()].ipv6.insert(address)
+                            }
+                        }
+                    }
+                }
+                item = entry.ifa_next
+            }
+        }
+
+        let displayNames: [String: String] = (SCNetworkInterfaceCopyAll() as? [SCNetworkInterface] ?? [])
+            .reduce(into: [:]) { names, interface in
+                guard let bsdName = SCNetworkInterfaceGetBSDName(interface) as String?,
+                      let displayName = SCNetworkInterfaceGetLocalizedDisplayName(interface) as String? else { return }
+                names[bsdName] = displayName
+            }
+        let interfaces = addresses.keys.sorted().compactMap { name -> NetworkInterfaceReading? in
+            guard let found = addresses[name], !found.ipv4.isEmpty || !found.ipv6.isEmpty else { return nil }
+            return NetworkInterfaceReading(
+                name: name,
+                displayName: displayNames[name] ?? "网络接口",
+                ipv4Addresses: found.ipv4.sorted(),
+                ipv6Addresses: found.ipv6.sorted()
+            )
+        }
+        let route = readDefaultRoute()
+        return NetworkDetailsSnapshot(interfaces: interfaces, gateway: route.gateway, gatewayInterface: route.interface)
+    }
+
+    nonisolated private static func readDefaultRoute() -> (gateway: String?, interface: String?) {
+        let process = Foundation.Process()
+        let output = Pipe()
+        process.executableURL = URL(fileURLWithPath: "/sbin/route")
+        process.arguments = ["-n", "get", "default"]
+        process.standardOutput = output
+        process.standardError = FileHandle.nullDevice
+        guard (try? process.run()) != nil else { return (nil, nil) }
+        let data = output.fileHandleForReading.readDataToEndOfFile()
+        process.waitUntilExit()
+        guard process.terminationStatus == 0,
+              let text = String(data: data, encoding: .utf8) else { return (nil, nil) }
+        var gateway: String?
+        var interface: String?
+        for line in text.split(separator: "\n") {
+            let parts = line.split(whereSeparator: \.isWhitespace)
+            guard parts.count >= 2 else { continue }
+            if parts[0] == "gateway:" { gateway = String(parts[1]) }
+            if parts[0] == "interface:" { interface = String(parts[1]) }
+        }
+        return (gateway, interface)
+    }
+
+    nonisolated private static func readMountedVolumes() -> [DiskVolumeReading] {
+        let keys: Set<URLResourceKey> = [
+            .volumeNameKey, .volumeTotalCapacityKey, .volumeAvailableCapacityKey,
+            .volumeIsLocalKey, .volumeIsRemovableKey
+        ]
+        let urls = FileManager.default.mountedVolumeURLs(
+            includingResourceValuesForKeys: Array(keys),
+            options: [.skipHiddenVolumes]
+        ) ?? []
+        var volumes = urls.compactMap { url -> DiskVolumeReading? in
+            guard let values = try? url.resourceValues(forKeys: keys),
+                  let total = values.volumeTotalCapacity, total > 0,
+                  let available = values.volumeAvailableCapacity else { return nil }
+            let local = values.volumeIsLocal ?? true
+            return DiskVolumeReading(
+                name: values.volumeName ?? url.lastPathComponent,
+                mountPath: url.standardizedFileURL.path,
+                totalBytes: UInt64(total),
+                availableBytes: UInt64(max(0, available)),
+                isNetwork: !local,
+                isRemovable: values.volumeIsRemovable ?? false
+            )
+        }
+
+        let root = URL(fileURLWithPath: "/")
+        if !volumes.contains(where: { $0.mountPath == "/" }),
+           let values = try? root.resourceValues(forKeys: keys),
+           let total = values.volumeTotalCapacity, total > 0,
+           let available = values.volumeAvailableCapacity {
+            volumes.append(DiskVolumeReading(
+                name: values.volumeName ?? "系统卷",
+                mountPath: "/",
+                totalBytes: UInt64(total),
+                availableBytes: UInt64(max(0, available)),
+                isNetwork: false,
+                isRemovable: false
+            ))
+        }
+        return volumes.sorted { lhs, rhs in
+            let lhsIsRoot = lhs.mountPath == "/"
+            let rhsIsRoot = rhs.mountPath == "/"
+            if lhsIsRoot != rhsIsRoot { return lhsIsRoot }
+            return lhs.name.localizedStandardCompare(rhs.name) == .orderedAscending
+        }
+    }
 }
 
 extension ProcessInfo.ThermalState {
@@ -698,5 +1086,6 @@ extension ProcessInfo.ThermalState {
 }
 
 func formatBytes(_ bytes: UInt64) -> String {
-    ByteCountFormatter.string(fromByteCount: Int64(bytes), countStyle: .memory)
+    if bytes == 0 { return "0 B" }
+    return ByteCountFormatter.string(fromByteCount: Int64(bytes), countStyle: .memory)
 }

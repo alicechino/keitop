@@ -1,13 +1,17 @@
 import SwiftUI
 import Charts
+import AppKit
 
 enum Page: String, CaseIterable, Identifiable {
-    case overview = "概览", cpu = "CPU", processes = "进程", fans = "风扇", records = "记录", osd = "OSD", settings = "设置"
+    case overview = "概览", cpu = "CPU", memory = "内存", disk = "硬盘", network = "网络", processes = "进程", fans = "风扇", records = "记录", osd = "OSD", settings = "设置"
     var id: String { rawValue }
     var symbol: String {
         switch self {
         case .overview: "square.grid.2x2.fill"
         case .cpu: "cpu"
+        case .memory: "memorychip"
+        case .disk: "internaldrive"
+        case .network: "network"
         case .processes: "list.bullet.rectangle"
         case .fans: "fanblades.fill"
         case .records: "clock.arrow.circlepath"
@@ -44,8 +48,16 @@ struct ContentView: View {
                 ScrollView {
                     Group {
                         switch navigation.page {
-                        case .overview: OverviewPage(onCPUSelected: { navigation.page = .cpu })
+                        case .overview: OverviewPage(
+                            onCPUSelected: { navigation.page = .cpu },
+                            onMemorySelected: { navigation.page = .memory },
+                            onDiskSelected: { navigation.page = .disk },
+                            onNetworkSelected: { navigation.page = .network }
+                        )
                         case .cpu: CPUPage()
+                        case .memory: MemoryPage(onProcessesSelected: { navigation.page = .processes })
+                        case .disk: DiskPage()
+                        case .network: NetworkPage()
                         case .processes: ProcessesPage()
                         case .fans: FansPage()
                         case .records: RecordsPage()
@@ -91,22 +103,24 @@ struct ContentView: View {
 struct OverviewPage: View {
     @EnvironmentObject private var monitor: SystemMonitor
     let onCPUSelected: () -> Void
-    private let columns = [GridItem(.flexible()), GridItem(.flexible()), GridItem(.flexible())]
+    let onMemorySelected: () -> Void
+    let onDiskSelected: () -> Void
+    let onNetworkSelected: () -> Void
+    private let columns = [GridItem(.adaptive(minimum: 300), spacing: 14)]
     var body: some View {
         LazyVGrid(columns: columns, spacing: 16) {
             MetricCard(title: "CPU 使用率", value: "\(Int(monitor.cpuUsage.rounded()))%", subtitle: "点击查看每个核心", color: .orange, samples: monitor.samples, keyPath: \.cpu, chartDomain: 0...100, action: onCPUSelected)
             MetricCard(title: "GPU 负载", value: monitor.gpuUsage.map { "\(Int($0.rounded()))%" } ?? "—", subtitle: "频率加权负载", color: .green, samples: monitor.samples, keyPath: \.gpuUsage, chartDomain: 0...100)
             MetricCard(title: "CPU 功耗", value: monitor.cpuPower.map { String(format: "%.1f W", $0) } ?? "—", subtitle: monitor.cpuPower == nil ? "mactop 暂未返回读数" : "Apple Silicon CPU 功耗传感器", color: .yellow, samples: monitor.samples, keyPath: monitor.cpuPower == nil ? nil : \.cpuPower)
             MetricCard(title: "GPU 功耗", value: monitor.gpuPower.map { String(format: "%.1f W", $0) } ?? "—", subtitle: "SoC GPU", color: .purple, samples: monitor.samples, keyPath: monitor.gpuPower == nil ? nil : \.gpuPower)
-            MetricCard(title: "内存占用", value: "\(formatBytes(monitor.memoryUsed)) / \(formatBytes(monitor.memoryTotal))", subtitle: "\(Int((monitor.memoryFraction * 100).rounded()))% 已使用", color: .cyan, samples: monitor.samples, keyPath: \.memory, chartDomain: 0...100)
+            MetricCard(title: "内存占用", value: "\(formatBytes(monitor.memoryUsed)) / \(formatBytes(monitor.memoryTotal))", subtitle: "\(Int((monitor.memoryFraction * 100).rounded()))% 已使用 · 点击查看内存详情", color: .cyan, samples: monitor.samples, keyPath: \.memory, chartDomain: 0...100, action: onMemorySelected)
             MetricCard(title: "整机芯片功耗", value: monitor.chipPower.map { String(format: "%.1f W", $0) } ?? "—", subtitle: monitor.sensorStatus, color: .blue, samples: monitor.samples, keyPath: \.chipPower)
             MetricCard(title: "CPU 温度", value: monitor.cpuTemperature.map { String(format: "%.0f°C", $0) } ?? "—", subtitle: "平均传感器温度", color: .pink, samples: monitor.samples, keyPath: monitor.cpuTemperature == nil ? nil : \.cpuTemperature)
             MetricCard(title: "GPU 温度", value: monitor.gpuTemperature.map { String(format: "%.0f°C", $0) } ?? "—", subtitle: "平均传感器温度", color: .yellow, samples: monitor.samples, keyPath: monitor.gpuTemperature == nil ? nil : \.gpuTemperature)
-            MetricCard(title: "系统热状态", value: monitor.thermalState.displayName, subtitle: "由 macOS Thermal State 提供", color: .brown)
-            MetricCard(title: "GPU 频率", value: monitor.gpuFrequency.map { "\(Int($0)) MHz" } ?? "—", subtitle: "Apple Silicon 图形核心", color: .teal)
-            MetricCard(title: "网络下载", value: String(format: "↓ %.2f MB/s", monitor.networkDownloadMBps), subtitle: String(format: "上传 ↑ %.2f MB/s", monitor.networkUploadMBps), color: .cyan, samples: monitor.samples, keyPath: \.networkDownload)
+            DiskOverviewCard(volume: monitor.systemVolume, action: onDiskSelected)
+            BatteryOverviewCard(battery: monitor.battery, subtitle: batterySubtitle)
+            MetricCard(title: "网络状态", value: String(format: "↓ %.2f MB/s", monitor.networkDownloadMBps), subtitle: String(format: "上传 ↑ %.2f MB/s · 点击查看网络详情", monitor.networkUploadMBps), color: .cyan, samples: monitor.samples, keyPath: \.networkDownload, action: onNetworkSelected)
             MetricCard(title: "磁盘读取", value: String(format: "↓ %.2f MB/s", monitor.diskReadMBps), subtitle: String(format: "写入 ↑ %.2f MB/s", monitor.diskWriteMBps), color: .indigo, samples: monitor.samples, keyPath: \.diskRead)
-            MetricCard(title: "电池", value: monitor.battery.map { "\(Int($0.chargePercent.rounded()))%" } ?? "无电池", subtitle: batterySubtitle, color: .green)
         }
     }
 
@@ -115,6 +129,92 @@ struct OverviewPage: View {
         let power = battery.isCharging ? "正在充电" : (battery.isOnAC ? "已接入电源" : "电池供电")
         let health = battery.healthPercent.map { " · 健康度 \(Int($0.rounded()))%" } ?? ""
         return power + health
+    }
+}
+
+private struct DiskOverviewCard: View {
+    let volume: DiskVolumeReading?
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            VStack(alignment: .leading, spacing: 9) {
+                HStack {
+                    Text("硬盘占用").font(.system(size: 13, weight: .medium)).foregroundStyle(.secondary)
+                    Spacer()
+                    Image(systemName: "arrow.up.right.square").font(.system(size: 11)).foregroundStyle(.tertiary)
+                }
+                Spacer(minLength: 4)
+                if let volume {
+                    HStack(alignment: .firstTextBaseline) {
+                        Text("\(formatBytes(volume.usedBytes)) / \(formatBytes(volume.totalBytes))")
+                            .font(.system(size: 19, weight: .medium, design: .rounded)).lineLimit(1).minimumScaleFactor(0.7)
+                        Spacer(minLength: 4)
+                        Text("\(Int((volume.usedFraction * 100).rounded()))%")
+                            .font(.system(size: 14, weight: .semibold, design: .rounded)).foregroundStyle(.secondary)
+                    }
+                    CapacityBar(fraction: volume.usedFraction, color: .indigo)
+                    HStack {
+                        Text("已用 \(formatBytes(volume.usedBytes))")
+                        Spacer(minLength: 4)
+                        Text("可用 \(formatBytes(volume.availableBytes))")
+                    }
+                    .font(.system(size: 11)).foregroundStyle(.secondary).lineLimit(1).minimumScaleFactor(0.75)
+                } else {
+                    Text("正在读取系统卷容量…").font(.system(size: 15, weight: .medium))
+                    CapacityBar(fraction: 0, color: .indigo)
+                    Text("点击查看磁盘详情").font(.system(size: 11)).foregroundStyle(.secondary)
+                }
+            }
+            .frame(maxWidth: .infinity, minHeight: 210, alignment: .topLeading)
+            .padding(15).background(.quaternary.opacity(0.33), in: RoundedRectangle(cornerRadius: 15))
+            .contentShape(RoundedRectangle(cornerRadius: 15))
+        }
+        .buttonStyle(.plain)
+        .accessibilityHint("打开硬盘详情")
+    }
+}
+
+private struct BatteryOverviewCard: View {
+    let battery: BatteryReading?
+    let subtitle: String
+
+    private var tint: Color {
+        guard let battery else { return .green }
+        if battery.chargePercent <= 20 { return .red }
+        if battery.chargePercent <= 40 { return .orange }
+        return .green
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 9) {
+            HStack {
+                Text("电池").font(.system(size: 13, weight: .medium)).foregroundStyle(.secondary)
+                Spacer()
+                Image(systemName: battery?.isCharging == true ? "battery.100percent.bolt" : "battery.100percent")
+                    .font(.system(size: 12)).foregroundStyle(tint)
+            }
+            Spacer(minLength: 4)
+            if let battery {
+                HStack(alignment: .firstTextBaseline) {
+                    Text("\(Int(battery.chargePercent.rounded()))%")
+                        .font(.system(size: 20, weight: .medium, design: .rounded))
+                    Spacer()
+                    if let health = battery.healthPercent {
+                        Text("健康度 \(Int(health.rounded()))%")
+                            .font(.system(size: 11, weight: .medium)).foregroundStyle(.secondary)
+                    }
+                }
+                CapacityBar(fraction: battery.chargePercent / 100, color: tint)
+                Text(subtitle).font(.system(size: 11)).foregroundStyle(.secondary).lineLimit(1).minimumScaleFactor(0.75)
+            } else {
+                Text("无电池").font(.system(size: 17, weight: .medium))
+                CapacityBar(fraction: 0, color: tint)
+                Text(subtitle).font(.system(size: 11)).foregroundStyle(.secondary).lineLimit(1)
+            }
+        }
+        .frame(maxWidth: .infinity, minHeight: 210, alignment: .topLeading)
+        .padding(15).background(.quaternary.opacity(0.33), in: RoundedRectangle(cornerRadius: 15))
     }
 }
 
@@ -136,7 +236,7 @@ struct MetricCard: View {
         }
         .chartXAxis(.hidden)
         .chartYAxis(.hidden)
-        .frame(height: 82)
+        .frame(height: 66)
         .modifier(OptionalChartDomain(domain: chartDomain))
     }
 
@@ -144,14 +244,16 @@ struct MetricCard: View {
         VStack(alignment: .leading, spacing: 8) {
             HStack { Text(title).font(.system(size: 13, weight: .medium)).foregroundStyle(.secondary); Spacer(); Image(systemName: "arrow.up.right.square").font(.system(size: 11)).foregroundStyle(.tertiary) }
             Text(value).font(.system(size: 20, weight: .medium, design: .rounded)).lineLimit(1).minimumScaleFactor(0.72)
-            if let keyPath, !samples.isEmpty {
+            Spacer(minLength: 4)
+            if keyPath != nil, !samples.isEmpty {
                 historyChart
             } else {
-                RoundedRectangle(cornerRadius: 8).fill(color.opacity(0.08)).frame(height: 82)
+                RoundedRectangle(cornerRadius: 8).fill(color.opacity(0.08)).frame(height: 66)
                     .overlay(Image(systemName: "waveform.path").font(.system(size: 18)).foregroundStyle(color.opacity(0.42)))
             }
             Text(subtitle).font(.system(size: 11)).foregroundStyle(.secondary).lineLimit(1)
         }
+        .frame(maxWidth: .infinity, minHeight: 210, alignment: .topLeading)
         .padding(15).background(.quaternary.opacity(0.33), in: RoundedRectangle(cornerRadius: 15))
     }
 
@@ -175,7 +277,8 @@ struct CPUPage: View {
         VStack(alignment: .leading, spacing: 18) {
             HStack(alignment: .firstTextBaseline) {
                 VStack(alignment: .leading, spacing: 6) {
-                    Text(monitor.cpuModel ?? "CPU").font(.system(size: 24, weight: .semibold))
+                    Text(monitor.cpuSpecification ?? monitor.cpuModel ?? "CPU")
+                        .font(.system(size: 24, weight: .semibold)).lineLimit(1).minimumScaleFactor(0.72)
                     Text("每核心实时使用率 · 每 \(Int(monitor.refreshSeconds)) 秒更新")
                         .font(.system(size: 13)).foregroundStyle(.secondary)
                 }
@@ -208,6 +311,524 @@ struct CPUPage: View {
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+
+struct MemoryPage: View {
+    @EnvironmentObject private var monitor: SystemMonitor
+    let onProcessesSelected: () -> Void
+
+    private let twoColumns = [GridItem(.flexible()), GridItem(.flexible())]
+    private let fiveColumns = Array(repeating: GridItem(.flexible()), count: 5)
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            HStack(alignment: .firstTextBaseline) {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("内存").font(.system(size: 24, weight: .semibold))
+                    Text("物理内存与图形内存实时状态 · 每 \(Int(monitor.refreshSeconds)) 秒更新")
+                        .font(.system(size: 13)).foregroundStyle(.secondary)
+                }
+                Spacer()
+                Button(action: onProcessesSelected) {
+                    Label("按内存查看进程", systemImage: "list.bullet.rectangle")
+                }.buttonStyle(.bordered)
+            }
+
+            physicalMemoryCard
+
+            LazyVGrid(columns: twoColumns, spacing: 14) {
+                graphicsMemoryCard
+                swapCard
+            }
+
+            pressureCard
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private var physicalMemoryCard: some View {
+        VStack(alignment: .leading, spacing: 15) {
+            HStack(alignment: .firstTextBaseline) {
+                Text("Memory").font(.system(size: 19, weight: .semibold))
+                Spacer()
+                Text("总容量 \(formatBytes(monitor.memoryTotal))")
+                    .font(.system(size: 17, weight: .semibold, design: .rounded)).monospacedDigit()
+            }
+            MemoryCompositionBar(segments: monitor.memoryComposition)
+            LazyVGrid(columns: fiveColumns, alignment: .leading, spacing: 12) {
+                ForEach(monitor.memoryComposition) { segment in
+                    MemoryLegend(color: memoryColor(segment.name), title: segment.name, value: formatBytes(segment.bytes))
+                }
+            }
+            Text("按 macOS 虚拟内存页队列分段；Other 是未归入前四项的剩余容量，分段总和与物理内存一致。")
+                .font(.system(size: 11)).foregroundStyle(.tertiary)
+        }
+        .padding(18).background(.quaternary.opacity(0.33), in: RoundedRectangle(cornerRadius: 15))
+    }
+
+    private var graphicsMemoryCard: some View {
+        VStack(alignment: .leading, spacing: 13) {
+            HStack {
+                Text("Graphics").font(.system(size: 18, weight: .semibold))
+                Spacer()
+                Image(systemName: "gpu-card").foregroundStyle(.secondary)
+            }
+            Text(monitor.cpuModel ?? "Apple GPU")
+                .font(.system(size: 15, weight: .semibold))
+            if let gpu = monitor.gpuMemory {
+                HStack {
+                    Text("GPU 使用的\(gpu.isUnifiedMemoryEstimate ? "统一内存" : "图形内存")")
+                    Spacer()
+                    Text("空闲：\(formatBytes(gpu.available)) / \(formatBytes(gpu.total))")
+                        .monospacedDigit()
+                }.font(.system(size: 12, weight: .medium))
+                CapacityBar(fraction: gpu.fraction, color: .cyan)
+                HStack {
+                    Text("已用 \(formatBytes(gpu.used))")
+                    Spacer()
+                    Text("\(Int((gpu.fraction * 100).rounded()))%")
+                }.font(.system(size: 12)).foregroundStyle(.secondary).monospacedDigit()
+                Text(gpu.isUnifiedMemoryEstimate
+                     ? "Apple Silicon 与 CPU 共用统一内存；GPU 数值是驱动报告的活动内存，不是独立显存。"
+                     : "由图形驱动报告的显存使用量。")
+                    .font(.system(size: 11)).foregroundStyle(.tertiary)
+            } else {
+                Text("当前系统未返回 GPU 内存计数。")
+                    .font(.system(size: 13)).foregroundStyle(.secondary)
+                Text("GPU 显存读取依赖 IOAccelerator 驱动统计；其他 GPU 指标仍可正常显示。")
+                    .font(.system(size: 11)).foregroundStyle(.tertiary)
+            }
+        }
+        .frame(maxWidth: .infinity, minHeight: 150, alignment: .topLeading)
+        .padding(18).background(.quaternary.opacity(0.33), in: RoundedRectangle(cornerRadius: 15))
+        .help("Apple Silicon 使用统一内存，GPU 活动内存是系统内存的一部分。")
+    }
+
+    private var swapCard: some View {
+        VStack(alignment: .leading, spacing: 13) {
+            HStack {
+                Text("Swap").font(.system(size: 18, weight: .semibold))
+                Spacer()
+                Text(monitor.swapTotal > 0
+                     ? "已用 \(formatBytes(monitor.swapUsed)) / \(formatBytes(monitor.swapTotal))"
+                     : "当前未使用 Swap")
+                    .font(.system(size: 13, weight: .semibold, design: .rounded)).monospacedDigit()
+            }
+            if monitor.swapTotal > 0 {
+                CapacityBar(fraction: Double(monitor.swapUsed) / Double(monitor.swapTotal), color: .purple)
+            } else {
+                RoundedRectangle(cornerRadius: 9).fill(Color.secondary.opacity(0.12)).frame(height: 18)
+            }
+            HStack {
+                MemoryLegend(color: .purple, title: "已用", value: formatBytes(monitor.swapUsed))
+                Spacer()
+                Text(monitor.swapTotal > 0
+                     ? "可用 \(formatBytes(monitor.swapTotal > monitor.swapUsed ? monitor.swapTotal - monitor.swapUsed : 0))"
+                     : "尚未分配 Swap 空间")
+                    .font(.system(size: 12)).foregroundStyle(.secondary).monospacedDigit()
+            }
+            Text("Swap 是 macOS 使用的磁盘交换空间，与物理内存分开统计。")
+                .font(.system(size: 11)).foregroundStyle(.tertiary)
+        }
+        .frame(maxWidth: .infinity, minHeight: 150, alignment: .topLeading)
+        .padding(18).background(.quaternary.opacity(0.33), in: RoundedRectangle(cornerRadius: 15))
+    }
+
+    private var pressureCard: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack {
+                Text("内存压力").font(.system(size: 18, weight: .semibold))
+                Spacer()
+                Text(pressureDescription)
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(pressureColor)
+            }
+            if monitor.memoryPressureSamples.isEmpty {
+                ContentUnavailableView("暂无内存压力数据", systemImage: "waveform.path", description: Text("当前系统未返回内存压力状态。"))
+                    .frame(height: 100)
+            } else {
+                Chart(monitor.memoryPressureSamples) { sample in
+                    AreaMark(x: .value("时间", sample.date), y: .value("压力", sample.value))
+                        .foregroundStyle(pressureColor.opacity(0.14))
+                    LineMark(x: .value("时间", sample.date), y: .value("压力", sample.value))
+                        .foregroundStyle(pressureColor).lineStyle(StrokeStyle(lineWidth: 2))
+                        .interpolationMethod(.stepCenter)
+                }
+                .chartXAxis(.hidden).chartYAxis(.hidden).chartYScale(domain: 0...100)
+                .frame(height: 100)
+            }
+            Text("显示 macOS 当前压力等级的近 3 分钟变化；不是连续百分比测量。")
+                .font(.system(size: 11)).foregroundStyle(.tertiary)
+        }
+        .frame(maxWidth: .infinity, minHeight: 165, alignment: .topLeading)
+        .padding(18).background(.quaternary.opacity(0.33), in: RoundedRectangle(cornerRadius: 15))
+    }
+
+    private var pressureDescription: String {
+        switch monitor.memoryPressureLevel {
+        case 0: "正常"
+        case 1: "警告"
+        case 2: "严重"
+        default: "未知"
+        }
+    }
+
+    private var pressureColor: Color {
+        switch monitor.memoryPressureLevel {
+        case 0: .green
+        case 1: .orange
+        case 2: .red
+        default: .secondary
+        }
+    }
+
+    private func memoryColor(_ name: String) -> Color {
+        switch name {
+        case "Wired": .red
+        case "Used": .orange
+        case "Cache": .blue
+        case "Free": .green
+        default: .gray
+        }
+    }
+}
+
+struct DiskPage: View {
+    @EnvironmentObject private var monitor: SystemMonitor
+
+    private let columns = [GridItem(.flexible()), GridItem(.flexible())]
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 20) {
+            VStack(alignment: .leading, spacing: 6) {
+                Text("硬盘").font(.system(size: 24, weight: .semibold))
+                Text("系统卷与已挂载磁盘容量 · 约每 30 秒刷新")
+                    .font(.system(size: 13)).foregroundStyle(.secondary)
+            }
+
+            if let systemVolume = monitor.systemVolume {
+                StorageVolumeCard(volume: systemVolume, subtitle: "系统卷")
+            } else {
+                ContentUnavailableView("正在读取系统卷", systemImage: "internaldrive", description: Text("正在查询总容量和可用空间。"))
+                    .frame(maxWidth: .infinity, minHeight: 150)
+            }
+
+            VStack(alignment: .leading, spacing: 12) {
+                Text("网络磁盘").font(.system(size: 18, weight: .semibold))
+                if monitor.networkVolumes.isEmpty {
+                    ContentUnavailableView("没有已连接的网络磁盘", systemImage: "externaldrive.connected.to.line.below", description: Text("挂载 SMB、NFS 等网络卷后，会在这里显示容量。"))
+                        .frame(maxWidth: .infinity, minHeight: 120)
+                } else {
+                    LazyVGrid(columns: columns, spacing: 14) {
+                        ForEach(monitor.networkVolumes) { volume in
+                            StorageVolumeCard(volume: volume, subtitle: volume.mountPath)
+                        }
+                    }
+                }
+            }
+
+            if !monitor.removableVolumes.isEmpty {
+                VStack(alignment: .leading, spacing: 12) {
+                    Text("外接磁盘").font(.system(size: 18, weight: .semibold))
+                    LazyVGrid(columns: columns, spacing: 14) {
+                        ForEach(monitor.removableVolumes) { volume in
+                            StorageVolumeCard(volume: volume, subtitle: volume.mountPath)
+                        }
+                    }
+                }
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+
+struct NetworkPage: View {
+    @EnvironmentObject private var monitor: SystemMonitor
+    @StateObject private var publicIPLookup = PublicIPLookup()
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            HStack(alignment: .center) {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("网络").font(.system(size: 24, weight: .semibold))
+                    Text("已连接接口、局域网地址与实时流量")
+                        .font(.system(size: 13)).foregroundStyle(.secondary)
+                }
+                Spacer()
+                Button {
+                    if let url = URL(string: "x-apple.systempreferences:com.apple.Network-Settings.extension") {
+                        NSWorkspace.shared.open(url)
+                    }
+                } label: {
+                    Label("打开 macOS 网络设置", systemImage: "gearshape")
+                }
+                .buttonStyle(.bordered)
+            }
+
+            publicIPCard
+            trafficCard
+
+            VStack(alignment: .leading, spacing: 12) {
+                HStack {
+                    Text("活动网络接口").font(.system(size: 18, weight: .semibold))
+                    Spacer()
+                    Text("每 5 秒刷新") .font(.system(size: 11)).foregroundStyle(.tertiary)
+                }
+                if monitor.networkInterfaces.isEmpty {
+                    ContentUnavailableView("没有检测到已连接的网络接口", systemImage: "network.slash", description: Text("连接 Wi‑Fi、以太网或 VPN 后，接口和本地地址会显示在这里。"))
+                        .frame(maxWidth: .infinity, minHeight: 150)
+                } else {
+                    ForEach(monitor.networkInterfaces) { interface in
+                        NetworkInterfaceCard(
+                            interface: interface,
+                            gateway: monitor.gatewayInterface == interface.name ? monitor.defaultGateway : nil
+                        )
+                    }
+                }
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private var publicIPCard: some View {
+        HStack(spacing: 16) {
+            Image(systemName: "globe.americas.fill")
+                .font(.system(size: 23)).foregroundStyle(.cyan)
+                .frame(width: 48, height: 48)
+                .background(.cyan.opacity(0.12), in: RoundedRectangle(cornerRadius: 12))
+            VStack(alignment: .leading, spacing: 5) {
+        Text(publicIPLookup.address ?? "公网 IP")
+                    .font(.system(size: 18, weight: .semibold, design: .rounded)).monospacedDigit()
+        Text(publicIPLookup.error ?? (publicIPLookup.address == nil
+                     ? "按需查询 · 通过 api.ipify.org 获取，不会自动查询"
+                     : "由 api.ipify.org 返回 · 点击刷新"))
+                    .font(.system(size: 11)).foregroundStyle(publicIPLookup.error == nil ? Color.secondary : Color.orange)
+                    .lineLimit(2)
+            }
+            Spacer(minLength: 8)
+            Button {
+                Task { await publicIPLookup.lookup() }
+            } label: {
+                if publicIPLookup.isLoading {
+                    ProgressView().controlSize(.small)
+                } else {
+                    Label(publicIPLookup.address == nil ? "查询" : "刷新", systemImage: "arrow.clockwise")
+                }
+            }
+            .buttonStyle(.bordered)
+            .disabled(publicIPLookup.isLoading)
+        }
+        .padding(18).background(.quaternary.opacity(0.33), in: RoundedRectangle(cornerRadius: 15))
+    }
+
+    private var trafficCard: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(alignment: .firstTextBaseline) {
+                Text("实时流量").font(.system(size: 18, weight: .semibold))
+                Spacer()
+                Text(String(format: "↓ %.2f MB/s", monitor.networkDownloadMBps))
+                    .foregroundStyle(.cyan)
+                Text(String(format: "↑ %.2f MB/s", monitor.networkUploadMBps))
+                    .foregroundStyle(.green)
+            }
+            if monitor.samples.isEmpty {
+                ContentUnavailableView("正在采集网络流量", systemImage: "arrow.left.arrow.right")
+                    .frame(height: 120)
+            } else {
+                Chart {
+                    ForEach(monitor.samples) { sample in
+                        LineMark(x: .value("时间", sample.date), y: .value("速率", sample.networkDownload), series: .value("方向", "下载"))
+                            .foregroundStyle(.cyan).lineStyle(StrokeStyle(lineWidth: 2))
+                        LineMark(x: .value("时间", sample.date), y: .value("速率", sample.networkUpload), series: .value("方向", "上传"))
+                            .foregroundStyle(.green).lineStyle(StrokeStyle(lineWidth: 2))
+                    }
+                }
+                .chartXAxis(.hidden).chartYAxisLabel("MB/s")
+                .frame(height: 125)
+            }
+            Text("显示所有物理网络接口的合计收发速率；VPN 等虚拟接口不重复计入。")
+                .font(.system(size: 11)).foregroundStyle(.tertiary)
+        }
+        .padding(18).background(.quaternary.opacity(0.33), in: RoundedRectangle(cornerRadius: 15))
+    }
+
+}
+
+@MainActor
+private final class PublicIPLookup: ObservableObject {
+    @Published var address: String?
+    @Published var error: String?
+    @Published var isLoading = false
+
+    func lookup() async {
+        isLoading = true
+        error = nil
+        defer { isLoading = false }
+        do {
+            var request = URLRequest(url: URL(string: "https://api.ipify.org")!)
+            request.timeoutInterval = 8
+            let (data, response) = try await URLSession.shared.data(for: request)
+            guard let response = response as? HTTPURLResponse, (200..<300).contains(response.statusCode),
+                  let value = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines),
+                  !value.isEmpty else {
+                error = "公网 IP 查询失败，请检查网络后重试。"
+                return
+            }
+            address = value
+        } catch let lookupError {
+            error = "查询失败：\(lookupError.localizedDescription)"
+        }
+    }
+}
+
+private struct NetworkInterfaceCard: View {
+    let interface: NetworkInterfaceReading
+    let gateway: String?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(interface.displayName).font(.system(size: 17, weight: .semibold))
+                    Text(interface.name).font(.system(size: 11, design: .monospaced)).foregroundStyle(.secondary)
+                }
+                Spacer()
+                Circle().fill(.green).frame(width: 9, height: 9)
+                Text("已连接").font(.system(size: 11, weight: .medium)).foregroundStyle(.green)
+            }
+            Divider()
+            LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], alignment: .leading, spacing: 12) {
+                if !interface.ipv4Addresses.isEmpty {
+                    NetworkValue(label: "IPv4 地址", value: interface.ipv4Addresses.joined(separator: "\n"), symbol: "desktopcomputer")
+                }
+                if !interface.ipv6Addresses.isEmpty {
+                    NetworkValue(label: "IPv6 地址", value: interface.ipv6Addresses.joined(separator: "\n"), symbol: "globe")
+                }
+                if let gateway {
+                    NetworkValue(label: "默认网关", value: gateway, symbol: "wifi.router")
+                }
+            }
+            if gateway == nil {
+                Text("此接口不是当前默认路由接口，或系统未提供网关。")
+                    .font(.system(size: 11)).foregroundStyle(.tertiary)
+            }
+        }
+        .padding(16).background(.quaternary.opacity(0.33), in: RoundedRectangle(cornerRadius: 14))
+    }
+}
+
+private struct NetworkValue: View {
+    let label: String
+    let value: String
+    let symbol: String
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 9) {
+            Image(systemName: symbol).foregroundStyle(.secondary).frame(width: 18)
+            VStack(alignment: .leading, spacing: 3) {
+                Text(label).font(.system(size: 10)).foregroundStyle(.secondary)
+                Text(value).font(.system(size: 12, weight: .medium, design: .rounded)).monospacedDigit().textSelection(.enabled)
+            }
+        }
+    }
+}
+
+private struct StorageVolumeCard: View {
+    let volume: DiskVolumeReading
+    let subtitle: String
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 13) {
+            HStack(alignment: .firstTextBaseline) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(volume.name).font(.system(size: 18, weight: .semibold)).lineLimit(1)
+                    Text(subtitle).font(.system(size: 11)).foregroundStyle(.secondary).lineLimit(1)
+                }
+                Spacer(minLength: 10)
+                Text("\(formatBytes(volume.usedBytes)) / \(formatBytes(volume.totalBytes))")
+                    .font(.system(size: 14, weight: .semibold, design: .rounded)).monospacedDigit()
+            }
+            CapacityBar(fraction: volume.usedFraction, color: .indigo)
+            HStack {
+                MemoryLegend(color: .indigo, title: "已用", value: formatBytes(volume.usedBytes))
+                Spacer()
+                MemoryLegend(color: .secondary.opacity(0.45), title: "可用", value: formatBytes(volume.availableBytes))
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(18).background(.quaternary.opacity(0.33), in: RoundedRectangle(cornerRadius: 15))
+    }
+}
+
+private struct CapacityBar: View {
+    let fraction: Double
+    let color: Color
+
+    var body: some View {
+        GeometryReader { geometry in
+            ZStack(alignment: .leading) {
+                Capsule().fill(Color.secondary.opacity(0.2))
+                Capsule().fill(color).frame(width: geometry.size.width * min(1, max(0, fraction)))
+            }
+        }
+        .frame(height: 18)
+        .clipShape(Capsule())
+        .accessibilityLabel("占用 \(Int((fraction * 100).rounded()))%")
+    }
+}
+
+private struct MemoryCompositionBar: View {
+    let segments: [MemoryCategoryReading]
+
+    var body: some View {
+        GeometryReader { geometry in
+            HStack(spacing: 0) {
+                ForEach(segments.filter { $0.bytes > 0 }) { segment in
+                    Rectangle()
+                        .fill(color(for: segment.name))
+                        .frame(width: geometry.size.width * fraction(for: segment.bytes))
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(Color.secondary.opacity(0.2))
+        }
+        .frame(height: 19)
+        .clipShape(Capsule())
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(segments.map { "\($0.name) \(formatBytes($0.bytes))" }.joined(separator: ", "))
+    }
+
+    private func fraction(for bytes: UInt64) -> CGFloat {
+        let total = segments.reduce(UInt64(0)) { $0 + $1.bytes }
+        guard total > 0 else { return 0 }
+        return CGFloat(Double(bytes) / Double(total))
+    }
+
+    private func color(for name: String) -> Color {
+        switch name {
+        case "Wired": .red
+        case "Used": .orange
+        case "Cache": .blue
+        case "Free": .green
+        default: .gray
+        }
+    }
+}
+
+private struct MemoryLegend: View {
+    let color: Color
+    let title: String
+    let value: String
+
+    var body: some View {
+        HStack(spacing: 7) {
+            Circle().fill(color).frame(width: 9, height: 9)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title).font(.system(size: 11)).foregroundStyle(.secondary)
+                Text(value).font(.system(size: 13, weight: .semibold, design: .rounded)).monospacedDigit()
+            }
+        }
     }
 }
 

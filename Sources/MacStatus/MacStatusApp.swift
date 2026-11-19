@@ -8,7 +8,7 @@ struct KeiTopApp: App {
         WindowGroup {
             ContentView()
                 .environmentObject(monitor)
-                .frame(minWidth: 900, minHeight: 650)
+                .frame(minWidth: 900, minHeight: 560)
         }
         .windowStyle(.hiddenTitleBar)
 
