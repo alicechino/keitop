@@ -71,3 +71,5 @@ The source code is distributed under the MIT License. The illustration bundled i
 ![UI Preview 3](./3.png)
 ![UI Preview 4](./4.png)
 ![UI Preview 5](./5.png)
+![UI Preview 6](./6.png)
+![UI Preview 7](./7.png)
